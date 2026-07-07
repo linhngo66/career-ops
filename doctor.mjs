@@ -9,7 +9,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFi
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
-import { discoverPlugins, pluginRoots, pluginStatus } from './plugins/_engine.mjs';
+import { discoverPlugins, pluginRoots, pluginStatus, loadDotenvOnce } from './plugins/_engine.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -305,6 +305,8 @@ async function main() {
   console.log('\ncareer-ops doctor');
   console.log('================\n');
 
+  await loadDotenvOnce();
+
   const checks = [
     checkNodeVersion(),
     checkDependencies(),
@@ -398,6 +400,7 @@ function onboardingState(root) {
 }
 
 if (JSON_OUT) {
+  await loadDotenvOnce();
   console.log(JSON.stringify(onboardingState(projectRoot)));
   process.exit(0);
 } else {
