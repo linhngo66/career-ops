@@ -134,6 +134,9 @@ Or paste a JD directly to run the full pipeline.
 
 After determining the mode, load the necessary files before executing:
 
+### `modes/_custom.md` — read for EVERY mode, if it exists
+Before executing any mode below, check for `modes/_custom.md` and read it if present. It is user-layer (never auto-updated) and holds the user's own house rules, custom workflows, output preferences, and off-limits list. Its rules take precedence over this router's and any mode file's defaults, as long as they don't break the Data Contract (never touch the user's files without asking, never auto-submit an application). This applies uniformly — standalone modes, `_shared.md` modes, and subagent-delegated modes alike.
+
 ### Modes that require `_shared.md` + their mode file:
 Read `modes/_shared.md` + `modes/{mode}.md`
 
@@ -145,12 +148,12 @@ Read `modes/{mode}.md`
 Applies to: `tracker`, `agent-inbox`, `deep`, `interview-prep`, `interview`, `regional/eu-swe`, `interview/plan`, `interview/practice`, `interview/debrief`, `latex`, `training`, `project`, `patterns`, `titles`, `followup`, `cover`, `email`, `add`, `offer-prep`
 
 ### Modes delegated to subagent:
-For `scan`, `apply` (with Playwright), and `pipeline` (3+ URLs): launch as a worker/subagent with the content of `_shared.md` + `modes/{mode}.md` injected into the worker prompt. If your CLI exposes an `Agent(...)` primitive, the call looks like this:
+For `scan`, `apply` (with Playwright), and `pipeline` (3+ URLs): launch as a worker/subagent with the content of `_shared.md` + `modes/{mode}.md` injected into the worker prompt — and `modes/_custom.md`'s content too, if it exists, so the worker inherits the user's house rules (it cannot read the file itself once dispatched with only injected content). If your CLI exposes an `Agent(...)` primitive, the call looks like this:
 
 ```
 Agent(
   subagent_type="general-purpose",
-  prompt="[content of modes/_shared.md]\n\n[content of modes/{mode}.md]\n\n[invocation-specific data]",
+  prompt="[content of modes/_shared.md]\n\n[content of modes/_custom.md, if it exists]\n\n[content of modes/{mode}.md]\n\n[invocation-specific data]",
   description="career-ops {mode}"
 )
 ```
