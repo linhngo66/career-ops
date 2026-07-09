@@ -7,12 +7,7 @@
  *   node plugins.mjs run <id> [hook] [args…]    # run one hook of one plugin
  *   node plugins.mjs run gmail                  # ingest (the plugin's only hook)
  *   node plugins.mjs run notion search "staff platform engineer"
- *   node plugins.mjs run notion export [--dry-run] [--timeout <ms>]
- *
- * --timeout overrides the per-hook default (15s, plugins/_engine.mjs
- * DEFAULT_HOOK_TIMEOUT_MS). Rate-limited hooks like notion export (~3 req/s,
- * 2 calls/row) need more headroom once the tracker has more than a handful
- * of rows — e.g. --timeout 60000 for ~20 rows.
+ *   node plugins.mjs run notion export [--dry-run]
  *
  * Provider plugins are NOT run here — they ride `node scan.mjs` via a
  * `provider: <id>` entry in portals.yml. Keeping ingest/search/notify/export
@@ -125,10 +120,7 @@ async function cmdList() {
 
 async function cmdRun(args) {
   const dryRun = args.includes('--dry-run');
-  const timeoutIdx = args.indexOf('--timeout');
-  const timeoutMs = timeoutIdx !== -1 ? parseInt(args[timeoutIdx + 1], 10) : undefined;
-  if (timeoutIdx !== -1 && !Number.isFinite(timeoutMs)) { console.error('--timeout needs a number of milliseconds, e.g. --timeout 60000'); process.exit(1); }
-  const positional = args.filter((a, i) => a !== '--dry-run' && i !== timeoutIdx && i !== timeoutIdx + 1);
+  const positional = args.filter(a => a !== '--dry-run');
   const id = positional[0];
   if (!id) { console.error('Usage: node plugins.mjs run <id> [hook] [args…] [--dry-run]'); process.exit(1); }
 
@@ -162,7 +154,7 @@ async function cmdRun(args) {
   if (hook === 'ingest' || hook === 'search') {
     const payload = hook === 'search' ? positional.slice(hookArgStart).join(' ') : undefined;
     if (hook === 'search' && !payload) { console.error(`search needs a query: node plugins.mjs run ${id} search "<query>"`); process.exit(1); }
-    const results = await runHook(hook, payload, { root: ROOT, dryRun, ...(timeoutMs ? { timeoutMs } : {}) });
+    const results = await runHook(hook, payload, { root: ROOT, dryRun });
     const found = results.filter(r => r.ok && Array.isArray(r.result)).flatMap(r => r.result).map(sanitizeJob).filter(Boolean);
     // Additive de-dup: never re-add a URL already in the pipeline.
     const known = existingPipelineUrls();
@@ -176,7 +168,7 @@ async function cmdRun(args) {
 
   if (hook === 'export') {
     const snapshot = buildSnapshot();
-    const results = await runHook('export', snapshot, { root: ROOT, dryRun, ...(timeoutMs ? { timeoutMs } : {}) });
+    const results = await runHook('export', snapshot, { root: ROOT, dryRun });
     for (const r of results) {
       if (r.ok) console.log(`${r.id} export: pushed ${r.result?.pushed ?? 0} record(s).`);
       else console.log(`${r.id} export: failed — ${r.error}`);
@@ -186,7 +178,7 @@ async function cmdRun(args) {
 
   if (hook === 'notify') {
     const message = positional.slice(hookArgStart).join(' ') || '(career-ops notification)';
-    const results = await runHook('notify', { message }, { root: ROOT, dryRun, ...(timeoutMs ? { timeoutMs } : {}) });
+    const results = await runHook('notify', { message }, { root: ROOT, dryRun });
     for (const r of results) console.log(r.ok ? `${r.id} notify: sent.` : `${r.id} notify: failed — ${r.error}`);
     return;
   }

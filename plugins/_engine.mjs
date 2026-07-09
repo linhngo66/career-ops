@@ -593,7 +593,7 @@ export async function loadDotenvOnce() {
   dotenvLoaded = true;
   try {
     const { config } = await import('dotenv');
-    config({ quiet: true });
+    config();
   } catch {
     // dotenv optional — fall back to ambient process.env (CI, exported vars).
   }
