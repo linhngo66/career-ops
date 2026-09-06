@@ -177,8 +177,13 @@ async function cmdRun(args) {
     // data/pipeline.md's `- [ ]` checklist format by a table parser that can
     // never match it (a pre-existing, separate bug in buildSnapshot() — always
     // reads as empty), so counting it here would silently do nothing anyway.
+    // Per-row budget is 20s, not 3s: notion-custom's report-body sync can add
+    // a dozen-plus block-append/archive calls (each throttled ~360ms, plus
+    // real network latency) on top of the original property upsert whenever a
+    // report is new or changed — measured at ~15-20s/row on a first full sync
+    // of an existing tracker (schema creation + fresh body for every row).
     const rowCount = snapshot.applications.length;
-    const timeoutMs = Math.min(120_000, Math.max(15_000, rowCount * 3_000));
+    const timeoutMs = Math.min(300_000, Math.max(20_000, rowCount * 20_000));
     const results = filterResultsForId(await runHook('export', snapshot, { root: ROOT, dryRun, timeoutMs, pluginId: id }), id);
     for (const r of results) {
       if (r.ok) console.log(`${r.id} export: pushed ${r.result?.pushed ?? 0} record(s).`);

@@ -58,6 +58,7 @@ const REQUIREMENT_HEADER_RE = new RegExp(
     'required', 'requirements', 'qualifications', 'must[- ]have', 'preferred', 'nice[- ]to[- ]have',
     "what\\s+we(?:'|’)?\\s*re\\s+looking\\s+for",
     "what\\s+you(?:(?:'|’)ll|\\s+will)?\\s+bring",
+    "what\\s+you(?:(?:'|’)ll|\\s+will)?\\s+need",
     'who\\s+you\\s+are',
     'about\\s+you',
     'your\\s+(?:background|experience|profile)',
@@ -166,6 +167,12 @@ const STOPWORDS = new Set([
   'deep', 'interest', 'genuine', 'solid', 'comfortable', 'passion', 'passionate',
   'track', 'record', 'real', 'bonus', 'plus', 'hands', 'proficiency', 'fluency',
   'expertise', 'demonstrated', 'extensive', 'practical', 'good', 'great', 'clear',
+  // Auxiliary/question-starting verbs. Some requirement sections end in a
+  // bulleted list of rhetorical yes/no self-assessment questions ("Can you...",
+  // "Do you...", "When a number looks wrong, is your instinct to...") rather
+  // than skill statements — the capitalized sentence-opener otherwise gets
+  // misread as a required skill (#4013 follow-up).
+  'when', 'can', 'do', 'does', 'did', 'will', 'should', 'would', 'could',
 ]);
 
 /**
@@ -495,6 +502,12 @@ Python, Docker, Zookeeper
     ['"You could be a good fit if you:"', 'You Could Be a Good Fit If You:'],
     ['"It\'s Important To Us That You Have"', "## It's Important To Us That You Have"],
     ['"It Would Be Great if You Had"', '## It Would Be Great if You Had'],
+    // #4013 (Heidi/Data Analyst JD): "What You'll Need" silently yielded zero
+    // skills because only "what you'll bring" was recognized — a real-posting
+    // heading, not a hypothetical, so it's added as its own regression case
+    // rather than folded into an existing one.
+    ['"What You\'ll Need"', "## What You'll Need"],
+    ['"What You Need"', '## What You Need'],
   ];
   for (const [label, heading] of headerVariants) {
     const jd = `# Role\n\n${heading}\n- Hands-on experience with React, TypeScript and AWS\n`;
@@ -568,6 +581,29 @@ Python, Docker, Zookeeper
   eq('does not extract "Experience" as a skill', boilerplateSkills.includes('Experience'), false);
   eq('does not extract "Communication" as a skill', boilerplateSkills.includes('Communication'), false);
   eq('does not extract "Ability" as a skill', boilerplateSkills.includes('Ability'), false);
+
+  // Regression (#4013 follow-up): a requirements section that closes with a
+  // bulleted list of rhetorical yes/no self-assessment questions — real JD
+  // phrasing (Heidi/Data Analyst posting) — must not misread the capitalized
+  // question-starting auxiliary verb as a required skill.
+  const rhetoricalQuestionsJd = `
+# Role
+
+## What You'll Need
+- Passion for AI, shown through hands-on building, prototyping, or side projects.
+
+You should answer yes to most of these:
+- Can you take a vague "is this campaign working?" and come back with actionable insights?
+- Do you go find the answer yourself before asking someone to pull it for you?
+- When a number looks wrong, is your instinct to dig in and find the root cause?
+- Would you rather own a broad remit than sit in a single lane?
+`;
+  const rhetoricalSkills = extractJdSkills(rhetoricalQuestionsJd);
+  eq('"What You\'ll Need" opens a requirements block', rhetoricalSkills.includes('AI'), true);
+  eq('does not extract "Can" as a skill', rhetoricalSkills.includes('Can'), false);
+  eq('does not extract "Do" as a skill', rhetoricalSkills.includes('Do'), false);
+  eq('does not extract "When" as a skill', rhetoricalSkills.includes('When'), false);
+  eq('does not extract "Would" as a skill', rhetoricalSkills.includes('Would'), false);
 
   // Regression: tokens ending in a symbol (C#, C++, F#). The original trailing
   // \b needs a word char AFTER the symbol, so these never matched standalone —
