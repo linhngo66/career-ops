@@ -11,6 +11,8 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { CadenceSettings } from "@/components/followups/cadence-settings";
+import { persistCliId, readSavedCliId } from "@/lib/saved-cli";
 
 type Cli = {
   id: string;
@@ -66,8 +68,15 @@ export function ConfigForm() {
       .then((d) => {
         const list: Cli[] = d.clis ?? [];
         setClis(list);
-        // auto-select first installed if nothing chosen yet
-        setCliId((prev) => prev || list.find((c) => c.installed)?.id || "");
+        // Highlight + persist the only installed CLI when Config was never saved.
+        // Highlight-only used to look configured while jobs still read empty localStorage.
+        setCliId((prev) => {
+          if (prev) return prev;
+          const only = list.filter((c) => c.installed);
+          if (only.length !== 1) return list.find((c) => c.installed)?.id || "";
+          if (!readSavedCliId()) persistCliId(only[0].id);
+          return only[0].id;
+        });
       })
       .catch(() => setClis([]));
   }, []);
@@ -164,7 +173,7 @@ export function ConfigForm() {
                         disabled={!c.installed}
                         onClick={() => setCliId(c.id)}
                         className={cn(
-                          "flex flex-1 items-center gap-2 text-left",
+                          "flex flex-1 items-center gap-2 text-left max-sm:min-h-[44px]",
                           c.installed ? "" : "cursor-default",
                         )}
                       >
@@ -187,7 +196,7 @@ export function ConfigForm() {
                           href={c.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex shrink-0 items-center gap-1 text-xs text-brand hover:underline"
+                          className="inline-flex shrink-0 items-center justify-center gap-1 text-xs text-brand hover:underline max-sm:min-h-[44px]"
                         >
                           Install <ExternalLink className="size-3" />
                         </a>
@@ -291,11 +300,13 @@ export function ConfigForm() {
         </span>
       </button>
 
+      <CadenceSettings />
+
       <div className="mt-8 flex items-center gap-3">
         <button
           type="button"
           onClick={save}
-          className="inline-flex items-center gap-2 rounded-full bg-brand px-5 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-brand px-5 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200 max-sm:min-h-[44px]"
         >
           {saved ? <Check className="size-4" /> : null}
           {saved ? "Saved" : "Save config"}

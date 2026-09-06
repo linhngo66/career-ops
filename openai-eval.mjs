@@ -27,9 +27,20 @@
  * --url at http://localhost:... (or use ollama-eval.mjs).
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { getCareerOpsRoot } from './path-resolver.mjs';
+import { outputLanguageInstruction, parseOutputLanguage } from './profile-language.mjs';
+import {
+  formatReportNumber, releaseReportNumbers, reserveReportNumbers,
+} from './reserve-report-num.mjs';
+import { TokenAccumulator, formatBreakdown, normalizeOpenAIUsage } from './utils/token-tracker.mjs';
+import { buildBudgetedPrompt } from './lib/context-budget.mjs';
+
+const tracker = new TokenAccumulator();
+tracker.recordZeroToken('scan');
+tracker.recordZeroToken('pdf payload');
 
 try {
   const { config } = await import('dotenv');
@@ -37,6 +48,7 @@ try {
 } catch { /* dotenv optional */ }
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+const DATA_ROOT = getCareerOpsRoot();
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -44,8 +56,9 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const PATHS = {
   shared:  join(ROOT, 'modes', '_shared.md'),
   oferta:  join(ROOT, 'modes', 'oferta.md'),
-  cv:      join(ROOT, 'cv.md'),
-  reports: join(ROOT, 'reports'),
+  cv:        join(DATA_ROOT, 'cv.md'),
+  profileYml: join(DATA_ROOT, 'config', 'profile.yml'),
+  reports:    join(DATA_ROOT, 'reports'),
 };
 
 // ---------------------------------------------------------------------------
@@ -73,6 +86,7 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
                      (env OPENAI_BASE_URL, default https://api.openai.com/v1)
     --key <key>      API key             (env OPENAI_API_KEY)
     --no-save        Do not save report to reports/ directory
+    --no-compress    Skip token budget compression (full context injection)
     --help           Show this help
 
   ENV
@@ -99,6 +113,7 @@ let modelName  = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 let baseUrl    = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 let apiKey     = process.env.OPENAI_API_KEY || '';
 let saveReport = true;
+let noCompress = false;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--file' && args[i + 1]) {
@@ -122,6 +137,8 @@ for (let i = 0; i < args.length; i++) {
     apiKey = args[++i];
   } else if (args[i] === '--no-save') {
     saveReport = false;
+  } else if (args[i] === '--no-compress') {
+    noCompress = true;
   } else if (!args[i].startsWith('--')) {
     jdText += (jdText ? '\n' : '') + args[i];
   }
@@ -194,50 +211,49 @@ function readFile(path, label) {
   return readFileSync(path, 'utf-8').trim();
 }
 
-/**
- * Determine the next zero-padded report number based on existing files in reports/.
- * @returns {string} Zero-padded report number string, e.g. "042" or "1001".
- */
-function nextReportNumber() {
-  if (!existsSync(PATHS.reports)) return '001';
-  const files = readdirSync(PATHS.reports)
-    .map(f => { const m = f.match(/^(\d+)-/); return m ? parseInt(m[1], 10) : NaN; })
-    .filter(n => !isNaN(n));
-  if (files.length === 0) return '001';
-  return String(Math.max(...files) + 1).padStart(3, '0');
-}
-
 // ---------------------------------------------------------------------------
 // Load context files
 // ---------------------------------------------------------------------------
 console.log('\n📂  Loading context files...');
 
-const sharedContext = readFile(PATHS.shared, 'modes/_shared.md');
-const ofertaLogic   = readFile(PATHS.oferta, 'modes/oferta.md');
-const cvContent     = readFile(PATHS.cv,     'cv.md');
+const sharedContext = readFile(PATHS.shared,     'modes/_shared.md');
+const ofertaLogic   = readFile(PATHS.oferta,     'modes/oferta.md');
+const cvContent     = readFile(PATHS.cv,         'cv.md');
+const profileYml    = readFile(PATHS.profileYml, 'config/profile.yml');
+const languageInstruction = outputLanguageInstruction(parseOutputLanguage(profileYml));
 
 // ---------------------------------------------------------------------------
-// Build system prompt
+// Build system prompt with token budget management
 // ---------------------------------------------------------------------------
+const { contextBody, budgetReport } = buildBudgetedPrompt({
+  sharedContent: sharedContext,
+  ofertaContent: ofertaLogic,
+  cvContent,
+  profileYml,
+  jdText,
+  noCompress,
+  maxTokens: 128_000, // gpt-4o-mini context window
+});
+
+// Log token budget info
+if (budgetReport.compressed) {
+  console.log(`📊  Token budget: ${budgetReport.beforeTokens} → ${budgetReport.afterTokens} tokens (saved ${budgetReport.beforeTokens - budgetReport.afterTokens})`);
+  console.log(`    Trimmed sections: ${budgetReport.removed.join(', ')}`);
+  if (budgetReport.overBudget) {
+    console.log(`    ⚠️  Still ${budgetReport.afterTokens - budgetReport.budget} tokens over budget after compression`);
+  }
+} else if (budgetReport.overBudget) {
+  console.log(`⚠️  Token budget: ${budgetReport.totalTokens} tokens exceeds ${budgetReport.budget} limit by ${budgetReport.totalTokens - budgetReport.budget}`);
+} else {
+  console.log(`📊  Token budget: ${budgetReport.totalTokens} tokens (within ${budgetReport.budget} limit)`);
+}
+
 const systemPrompt = `You are career-ops, an AI-powered job search assistant.
 You evaluate job offers against the user's CV using a structured A-G scoring system.
 
 Your evaluation methodology is defined below. Follow it exactly.
 
-═══════════════════════════════════════════════════════
-SYSTEM CONTEXT (_shared.md)
-═══════════════════════════════════════════════════════
-${sharedContext}
-
-═══════════════════════════════════════════════════════
-EVALUATION MODE (oferta.md)
-═══════════════════════════════════════════════════════
-${ofertaLogic}
-
-═══════════════════════════════════════════════════════
-CANDIDATE RESUME (cv.md)
-═══════════════════════════════════════════════════════
-${cvContent}
+${contextBody}
 
 ═══════════════════════════════════════════════════════
 IMPORTANT OPERATING RULES FOR THIS SESSION
@@ -246,8 +262,9 @@ IMPORTANT OPERATING RULES FOR THIS SESSION
    - Block D (Comp research): use training-data salary estimates; note them as estimates.
    - Block G (Legitimacy): analyze JD text only; skip URL/page freshness checks.
    - Post-evaluation file saving is handled by the script, not by you.
-2. Generate Blocks A through G in full.
-3. At the very end, output this exact machine-readable block:
+2. ${languageInstruction}
+3. Generate Blocks A through G in full.
+4. At the very end, output this exact machine-readable block:
 
 ---SCORE_SUMMARY---
 COMPANY: <company name or "Unknown">
@@ -257,6 +274,24 @@ ARCHETYPE: <detected archetype>
 LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
 ---END_SUMMARY---
 `;
+
+// ---------------------------------------------------------------------------
+// Prompt caching (#1709) — engine 2 of the four from #1709, same shape as the
+// OpenRouter runner. The static prefix (shared + oferta + cv, ~12K tokens) is
+// byte-identical across every offer, yet was re-sent and re-billed each call.
+//
+// Host-gated on purpose: OpenAI-compatible gateways (OpenRouter, DeepSeek, …)
+// honor an ephemeral `cache_control` breakpoint on the prefix and reuse it
+// across back-to-back calls within the cache TTL. api.openai.com instead caches
+// long prefixes automatically and may reject the non-standard field, so it gets
+// a plain-string system message. Either way the prompt TEXT is unchanged.
+export function buildSystemMessage(prompt, host) {
+  if (host === 'api.openai.com') return { role: 'system', content: prompt };
+  return {
+    role: 'system',
+    content: [{ type: 'text', text: prompt, cache_control: { type: 'ephemeral' } }],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Call the OpenAI-compatible endpoint
@@ -275,16 +310,19 @@ if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
 let evaluationText;
 try {
+  // Streaming (SSE): llama.cpp/Unsloth brauchen bei langen Generationen den
+  // sofortigen Header; Non-Streaming läuft in Node/undici in den 5-Minuten-
+  // Header-Timeout, bevor die erste Zeile ankommt (8 t/s × 22k-Prefill).
   const res = await fetch(endpoint, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       model:    modelName,
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: `JOB DESCRIPTION TO EVALUATE:\n\n${jdText}` },
+        buildSystemMessage(systemPrompt, endpointHost),
+        { role: 'user', content: `JOB DESCRIPTION TO EVALUATE:\n\n${jdText}` },
       ],
-      stream:      false,
+      stream:      true,
       temperature: 0.4,
     }),
     signal: AbortSignal.timeout(timeoutMs),
@@ -302,8 +340,37 @@ try {
     process.exit(1);
   }
 
-  const data = await res.json();
-  evaluationText = data.choices?.[0]?.message?.content?.trim();
+  // SSE-Zeilen akkumulieren: content + reasoning_content getrennt
+  const parts = [];
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuf = '';
+  let thinkOpen = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    sseBuf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = sseBuf.indexOf('\n')) >= 0) {
+      const line = sseBuf.slice(0, nl).trim();
+      sseBuf = sseBuf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      let delta;
+      try { delta = JSON.parse(payload); } catch { continue; }
+      const d = delta.choices?.[0]?.delta ?? {};
+      if (d.reasoning_content) {
+        if (!thinkOpen) { parts.push('\n<think>\n'); thinkOpen = true; }
+        parts.push(d.reasoning_content);
+      } else {
+        if (thinkOpen) { parts.push('\n</think>\n\n'); thinkOpen = false; }
+        if (d.content) parts.push(d.content);
+      }
+    }
+  }
+  if (thinkOpen) parts.push('\n</think>\n');
+  evaluationText = parts.join('').trim();
   if (!evaluationText) {
     console.error('❌  The endpoint returned an empty response.');
     process.exit(1);
@@ -353,12 +420,14 @@ if (summaryMatch) {
 // Save report
 // ---------------------------------------------------------------------------
 if (saveReport) {
+  let reservedNumbers = [];
   try {
     if (!existsSync(PATHS.reports)) {
       mkdirSync(PATHS.reports, { recursive: true });
     }
 
-    const num         = nextReportNumber();
+    reservedNumbers   = await reserveReportNumbers(1, { rootDir: ROOT, reportsDir: PATHS.reports });
+    const num         = formatReportNumber(reservedNumbers[0]);
     const today       = new Date().toISOString().split('T')[0];
     const companySlug = company.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     const filename    = `${num}-${companySlug}-${today}.md`;
@@ -385,9 +454,19 @@ ${evaluationText.replace(/---SCORE_SUMMARY---[\s\S]*?---END_SUMMARY---/, '').tri
     console.log(`    | ${num} | ${today} | ${company} | ${role} | ${score}/5 | Evaluated | ❌ | [${num}](reports/${filename}) |`);
   } catch (err) {
     console.warn(`⚠️   Could not save report: ${err.message}`);
+  } finally {
+    if (reservedNumbers.length > 0) {
+      try {
+        await releaseReportNumbers(reservedNumbers, { reportsDir: PATHS.reports });
+      } catch (err) {
+        console.warn(`⚠️   Could not release report reservation: ${err.message}`);
+      }
+    }
   }
 }
 
 console.log('\n' + '─'.repeat(66));
 console.log(`  Score: ${score}/5  |  Archetype: ${archetype}  |  Legitimacy: ${legitimacy}`);
 console.log('─'.repeat(66) + '\n');
+
+console.log(formatBreakdown(tracker, modelName, 'openai'));
